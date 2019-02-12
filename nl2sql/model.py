@@ -11,9 +11,11 @@ class Encoder(nn.Module):
     def __init__(self, embedding_matrix,
                  max_columns_per_table,
                  max_words_per_question,
-                 n_lstm_cells=100,
+                 n_lstm_cells=200,
                  bidirectional=True,
-                 trainable_embedding=True, n_layers=1):
+                 trainable_embedding=True,
+                 n_layers=1,
+                 dropout=0.40):
 
         super(Encoder, self).__init__()
         vocab = embedding_matrix.shape[0]
@@ -26,22 +28,28 @@ class Encoder(nn.Module):
         self.column_encoder = nn.LSTM(feature_dim,
                                       n_lstm_cells,
                                       num_layers=n_layers,
-                                      bidirectional=bidirectional)
+                                      bidirectional=bidirectional,
+                                      dropout=dropout)
 
-        self.question_encoder = nn.LSTM(feature_dim,
-                                        n_lstm_cells,
-                                        num_layers=n_layers,
-                                        bidirectional=bidirectional)
+        # self.question_encoder = nn.LSTM(feature_dim,
+        #                                 n_lstm_cells,
+        #                                 num_layers=n_layers,
+        #                                 bidirectional=bidirectional,
+        #                                 dropout=dropout)
 
-        self.attended_question_encoder = nn.LSTM(feature_dim + max_columns_per_table,
+        self.question_encoder = self.column_encoder
+
+        self.attended_question_encoder = nn.LSTM((n_lstm_cells * 2 if bidirectional else 1) + max_columns_per_table,
                                                  n_lstm_cells,
                                                  num_layers=n_layers,
-                                                 bidirectional=bidirectional)
+                                                 bidirectional=bidirectional,
+                                                 dropout=dropout)
 
-        self.attended_column_encoder = nn.LSTM(feature_dim + max_words_per_question,
+        self.attended_column_encoder = nn.LSTM((n_lstm_cells * 2 if bidirectional else 1) + max_words_per_question,
                                                n_lstm_cells,
                                                num_layers=n_layers,
-                                               bidirectional=bidirectional)
+                                               bidirectional=bidirectional,
+                                               dropout=dropout)
 
         self.n_layers = n_layers * 2 if bidirectional else n_layers
 
@@ -53,6 +61,7 @@ class Encoder(nn.Module):
         self.attention_1 = nn.Linear(self.n_layers * self.n_lstm_cells, (self.n_layers * self.n_lstm_cells) // 2)
 
         self.attention_2 = nn.Linear((self.n_layers * self.n_lstm_cells) // 2, 1)
+        self.dropout = nn.Dropout(dropout)
 
     def init_hidden(self, batch_size):
         h_0, c_0 = [torch.zeros((self.n_layers, batch_size, self.n_lstm_cells), require_grad=False)] * 2
@@ -111,8 +120,8 @@ class Encoder(nn.Module):
         return question_seq, column_seq
 
     def forward(self, questions, columns):
-        questions = self.word_embedding(questions)
-        columns = self.word_embedding(columns)
+        questions = self.dropout(self.word_embedding(questions))
+        columns = self.dropout(self.word_embedding(columns))
         questions_output, _ = self.question_encoder(questions.permute(1, 0, 2))
         questions_output = questions_output.permute(1, 0, 2)
         columns_output = self.encode_columns(columns)
@@ -147,7 +156,8 @@ class Decoder(nn.Module):
                  agg_ops,
                  cond_ops,
                  states,
-                 use_self_attention=False):
+                 use_self_attention=False,
+                 dropout=0.2):
         """
         repr_dim -> hidden_dim of the encoded questions/columns
         op_seq_len -> max_length of the generated query
@@ -165,7 +175,7 @@ class Decoder(nn.Module):
         self.decoder_lstm = nn.LSTM(feature_dim,
                                     n_lstm_cells,
                                     num_layers=n_layers,
-                                    bidirectional=bidirectional)
+                                    bidirectional=bidirectional, dropout=dropout)
 
         self.bilinear = nn.Bilinear(n_lstm_cells, repr_dim + action_embedding_dim, 1)
 
@@ -192,6 +202,7 @@ class Decoder(nn.Module):
         self.embedding_size = action_embedding_dim
         self.use_attention = use_self_attention
         self.op_seq_len = op_seq_len
+        self.dropout = nn.Dropout(p=dropout)
 
     def generate_action_matrix(self, questions_encoded, columns_output, questions_output):
         # cols_repr_vector.shape -> batch_size, max_cols_per_tables, encoding_length
@@ -299,6 +310,18 @@ class Decoder(nn.Module):
         #         action_matrix.shape -> batch_size, self.embedding_size/action_embedding_dim
         return actions
 
+    # def get_action_vector_from_output(self, output_seq, action_matrix):
+    #     """
+    #     output_seq.shape -> batch_size, n_actions
+    #     action_matrix.shape -> batch_size, n_actions, hidden_size
+    #     """
+    #     top_index = torch.argmax(output_seq, dim=1).detach()
+    #     actions = torch.cat([action_matrix[n_batch_index, action_index].unsqueeze(0).detach()
+    #                          for n_batch_index, action_index in enumerate(top_index)], dim=0)
+    #
+    #     #         action_matrix.shape -> batch_size, self.embedding_size/action_embedding_dim
+    #     return actions
+
     def forward_step(self, previous_action_vector, questions_encoded, previous_hidden, output_actions_matrix):
         """
         takes the previous_state batch and predicts the next token
@@ -346,6 +369,7 @@ class Decoder(nn.Module):
         # start action
         previous_action = self.action_embedding.weight[0].repeat(batch_size, 1)
         action_matrix = self.generate_action_matrix(questions_encoded, columns_output, questions_output)
+        # previous_action = action_matrix[:, 0, :]
         # action_matrix.shape -> batch_size, n_actions, action_embedding_size(+repr_dim)
         start_seq = torch.zeros((batch_size, 1, action_matrix.shape[-2]), device=device)
         start_seq[:, :, 0] = 1
@@ -365,7 +389,7 @@ class Decoder(nn.Module):
                 output_seq, previous_hidden = self.forward_step(previous_action, questions_encoded, previous_hidden,
                                                                 action_matrix)
                 #                 output_seq.shape -> batch_size, op_seq_len
-                previous_action = target_output_seq[:, index - 1, :]
+                previous_action = self.get_action_vector_from_output(target_output_seq[:, index - 1, :], action_matrix)
                 output_seq_list.append(output_seq.unsqueeze(1))
 
         out_seqs = torch.cat(output_seq_list, dim=1)

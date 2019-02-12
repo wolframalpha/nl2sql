@@ -33,7 +33,7 @@ class DataTransformer:
     """
 
     def __init__(self, questions, header, sql_dict, ops, agg,
-                 embedding_filepath='data/glove.6B.300d.txt',
+                 embedding_filepath='data/glove.42B.300d.txt',
                  max_words_per_question_percentile=99,
                  max_words_per_column_percentile=99,
                  max_columns_per_table_percentile=100):
@@ -68,15 +68,15 @@ class DataTransformer:
         #         text = re.sub('\W+', ' ', text)
         text = text.lower()
         text = re.sub('\d+', 'NUMTAG', text)
+        text = re.sub('\d+', 'NUMTAG', text)
         text = re.sub('=', ' equal to ', text)
         text = re.sub('<', '  less than ', text)
         text = re.sub('>', ' greater than ', text)
         text = ' '.join(list(map(self.lmtzr.lemmatize, word_tokenize(text))))
-        #         text = re.sub('[\s]\W+[\s]', 'SYMNUM', text)
         return text
 
     @staticmethod
-    def get_embedding_matrix(filepath):
+    def get_embedding_matrix(filepath, word_index):
         embeddings_index = {}
         EMBEDDING_DIM = int(re.findall(('(?<=\.)\d+(?=d)'), filepath)[0])
         f = open(filepath)
@@ -86,35 +86,24 @@ class DataTransformer:
             coefs = np.asarray(values[1:], dtype='float32')
             embeddings_index[word] = coefs
         f.close()
+
         print('Found %s word vectors.' % len(embeddings_index))
-
-        word_index = {word: index + 2 for index, word in enumerate(embeddings_index.keys())}
-        word_index['UNKWORD'] = 1
-        #         print(list(word_index.items())[:10])
-
-        index_word = {index: word for word, index in word_index.items()}
 
         embedding_matrix = np.zeros((len(word_index) + 1, EMBEDDING_DIM))
         for word, i in word_index.items():
             embedding_vector = embeddings_index.get(word)
             if embedding_vector is not None:
                 # words not found in embedding index will be all-zeros.
-                if embedding_vector.shape[0] == EMBEDDING_DIM:
-                    embedding_matrix[i] = embedding_vector
-                else:
-                    print('incorrect dim', embedding_vector.shape, word)
+                embedding_matrix[i] = embedding_vector
             else:
-                print("Not Found in Embedding Matrix: ", word)
-        #                 pass
-        return embedding_matrix, word_index, index_word
+                #         print("Not Found in Embedding Matrix: ", word)
+                pass
+        return embedding_matrix
 
     def _fit(self, questions, headers):
 
-        self.tokenizer = Tokenizer(filters='', oov_token='UNKWORD')
-        self.embedding_matrix, word_index, index_word = DataTransformer.get_embedding_matrix(self.embedding_filepath)
-        self.tokenizer.word_index, self.tokenizer.index_word = word_index, index_word
-
-        #         self.tokenizer.fit_on_texts(list(map(self.clean_text, questions)) + [y for x in headers for y in x])
+        self.tokenizer = Tokenizer()
+        self.tokenizer.fit_on_texts(list(map(self.clean_text, questions)) + [y for x in headers for y in x])
         #         self.tokenizer.fit_on_texts(list(questions) + [y for x in headers for y in x])
         question_sequences = self.tokenizer.texts_to_sequences(questions)
         columns_sequences = [self.tokenizer.texts_to_sequences(columns) for columns in headers]
@@ -128,7 +117,7 @@ class DataTransformer:
         self.max_columns_per_table = int(np.percentile([len(col_list) for col_list in columns_sequences],
                                                        self.max_columns_per_table_percentile))
 
-        #         self.embedding_matrix = DataTransformer.get_embedding_matrix(self.embedding_filepath, self.tokenizer.word_index)
+        self.embedding_matrix = DataTransformer.get_embedding_matrix(self.embedding_filepath, self.tokenizer.word_index)
         return self
 
     def transform_questions(self, questions):
@@ -317,7 +306,8 @@ class DataTransformer:
         index = np.argmax(seq)
         #         print(index)
         if index in self.start_index:
-            return None, 0
+            state = 0
+            return state, 0
 
         if index in self.agg_index:
             agg_seq = seq[self.agg_index]
@@ -455,5 +445,3 @@ class DataTransformer:
         #         return seq
         seq.append(end)
         return np.array(seq)
-
-

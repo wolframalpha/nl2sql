@@ -60,7 +60,7 @@ class TrainingDataSet(Dataset):
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 print(device)
 embedding_tensors = torch.tensor(datatransformer.embedding_matrix, device=device, dtype=torch.float)
-
+print(embedding_tensors.shape)
 train_sequences_tensor = torch.tensor(train_sequences, device=device, dtype=torch.long, requires_grad=False)
 test_sequences_tensor = torch.tensor(test_sequences, device=device, dtype=torch.long, requires_grad=False)
 
@@ -83,14 +83,14 @@ test_dataloader = DataLoader(test_dataset, batch_size=64)
 model = NL2SQL.initialise_encoder_decoder_network(encoder_word_embedding_matrix=embedding_tensors,
                                                   encoder_max_columns_per_table=train_columns_sequences.shape[-2],
                                                   encoder_max_words_per_question=train_sequences.shape[-1],
-                                                  encoder_n_lstm_cells=150,
+                                                  encoder_n_lstm_cells=200,
                                                   encoder_bidirectional=True,
-                                                  encoder_trainable_embedding=False,
+                                                  encoder_trainable_embedding=True,
                                                   encoder_n_layers=1,
-                                                  decoder_n_lstm_cells=150,
+                                                  decoder_n_lstm_cells=200,
                                                   decoder_n_layers=1,
                                                   decoder_op_seq_len=train_target.shape[-2],
-                                                  decoder_action_embedding_dim=15,
+                                                  decoder_action_embedding_dim=16,
                                                   decoder_bidirectional=True,
                                                   decoder_agg_ops=datatransformer.agg,
                                                   decoder_cond_ops=datatransformer.ops,
@@ -103,15 +103,17 @@ loss_function = nn.CrossEntropyLoss()
 #                                                         requires_grad=False))
 
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
-# model = torch.load("data/training/NL2SQL5e:3.pt")
+# model = torch.load("data/training/NL2SQL15e:3.pt")
 for i in range(100):
     model.train()
     loss_value = 0
     for batch_no, (X, y) in enumerate(train_dataloader):
         #         print(y.shape)
         batch_size, op_seq_len, n_actions = y.shape
+        y_pred = model(*X, teacher_forcing_ratio=0.2, target_output_seq=torch.tensor(y,
+                                                                                     dtype=torch.float,
+                                                                                     device=device))
         y = y.view(-1, n_actions)
-        y_pred = model(*X)
         # print(y_pred.shape)
         y_pred = y_pred.view(-1, n_actions)
 
@@ -128,7 +130,7 @@ for i in range(100):
         # print('\r', "Loss: {}, batch: {}".format(loss_value / (batch_no if batch_no > 0 else 1), batch_no), end="")
         print("Loss: {}, batch: {}".format(loss_value / (batch_no if batch_no > 0 else 1), batch_no), end="\n")
     # optimizer.zero_grad()
-    # torch.save(model, 'data/training/NL2SQL5e:{epoch}.pt'.format(epoch=i))
+    # torch.save(model, 'data/training/NL2SQL15e:{epoch}.pt'.format(epoch=i))
     # model = torch.load("data/training/NL2SQL2e:0.pt")
     with torch.no_grad():
         model.eval()
@@ -144,8 +146,8 @@ for i in range(100):
 
         for index, (X, y) in enumerate(train_dataloader):
             batch_size, op_seq_len, n_actions = y.shape
-            y = y.view(-1, n_actions)
             y_pred_train = model(*X)
+            y = y.view(-1, n_actions)
             # pickle.dump([y.tolist(), y_pred_train.tolist()], open('data/training/true_pred_ex.pic', 'wb'))
             # sys.exit()
             y_pred_train = y_pred_train.view(-1, n_actions)
@@ -169,8 +171,8 @@ for i in range(100):
         test_true_pd = []
         for index, (X, y) in enumerate(test_dataloader):
             batch_size, op_seq_len, n_actions = y.shape
-            y = y.view(-1, n_actions)
             y_pred_test = model(*X)
+            y = y.view(-1, n_actions)
 
             y_pred_test = y_pred_test.view(-1, n_actions)
 
@@ -199,21 +201,30 @@ for i in range(100):
     pickle.dump([cm_train, cm_test],
                 open('data/training/reports/ConfusionMatrix|e:%d.pic' % i, 'wb'))
 
-    torch.save(model, 'data/training/models/NL2SQL5e:{epoch}.pt'.format(epoch=i))
+    torch.save(model, 'data/training/models/NL2SQL16e:{epoch}.pt'.format(epoch=i))
 
-    test_report = eval_utils.get_slotwise_report(cm_test, 26, 44, 6, 4)
+    #
+    # test_report = eval_utils.get_slotwise_report(cm_test, 26, 44, 6, 4)
+    #
+    # train_report = eval_utils.get_slotwise_report(cm_train, 26, 44, 6, 4)
 
-    train_report = eval_utils.get_slotwise_report(cm_train, 26, 44, 6, 4)
+    test_report = eval_utils.get_slotwise_report(cm_test, datatransformer.max_words_per_question,
+                                                 datatransformer.max_columns_per_table,
+                                                 datatransformer.n_agg, datatransformer.n_ops)
+
+    train_report = eval_utils.get_slotwise_report(cm_train, datatransformer.max_words_per_question,
+                                                 datatransformer.max_columns_per_table,
+                                                 datatransformer.n_agg, datatransformer.n_ops)
 
     test_report_df = pd.DataFrame.from_dict(test_report, orient='index')
     test_report_df.index = test_report_df.index.map(lambda x: 'testEpoch:%d_' % (i) + x)
 
-    test_report_df.to_csv(open('data/training/reports/NL2SQL5Report.csv', 'a+'))
+    test_report_df.to_csv(open('data/training/reports/NL2SQL16Report.csv', 'a+'))
 
     train_report_df = pd.DataFrame.from_dict(train_report, orient='index')
     train_report_df.index = train_report_df.index.map(lambda x: 'trainEpoch:%d_' % (i) + x)
 
-    train_report_df.to_csv(open('data/training/reports/NL2SQL5Report.csv', 'a+'))
+    train_report_df.to_csv(open('data/training/reports/NL2SQL16Report.csv', 'a+'))
 
     performance = {'test_report': test_report,
                    'train_report': train_report}
