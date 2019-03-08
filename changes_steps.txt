@@ -1,0 +1,7 @@
+- Adding character level encodings:
+    = nl2sql.dataloader.DataTransformer add features.
+
+- Adding BERT:
+    = nl2sql.model.Encoder add BERT
+
+
